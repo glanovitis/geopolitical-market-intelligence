@@ -3,16 +3,21 @@ import pandas as pd
 import requests
 from newsapi import NewsApiClient
 from datetime import datetime, timedelta
+from config import NEWS_API_KEY, MARKET_SYMBOLS, NEWS_SOURCES
+
 
 class MarketDataCollector:
-    def __init__(self, financial_symbols, news_sources, start_date, end_date):
+    def __init__(self, financial_symbols=MARKET_SYMBOLS, news_sources=NEWS_SOURCES, days_of_history=30):
         self.financial_symbols = financial_symbols
         self.news_sources = news_sources
-        self.start_date = start_date
-        self.end_date = end_date
-        
-        # Initialize News API (you'd need an actual API key)
-        self.newsapi = NewsApiClient(api_key='422cf89d34c04ffba20fbf76036562e1')
+        self.end_date = datetime.now().strftime('%Y-%m-%d')
+        self.start_date = (datetime.now() - timedelta(days=days_of_history)).strftime('%Y-%m-%d')
+
+        if not NEWS_API_KEY:
+            raise ValueError("NEWS_API_KEY not found in environment variables")
+
+        # Initialize News API with key from config
+        self.newsapi = NewsApiClient(api_key=NEWS_API_KEY)
 
     def collect_market_data(self):
         """
@@ -113,8 +118,10 @@ def main():
         'bbc-news',
         'cnn'
     ]
-    start_date = '2024-11-06'
-    end_date = '2024-12-05'
+    # Get current date
+    end_date = datetime.now().strftime('%Y-%m-%d')
+    # Get date 30 days ago
+    start_date = (datetime.now() - timedelta(days=30)).strftime('%Y-%m-%d')
 
     # Create data collector
     collector = MarketDataCollector(

@@ -19,8 +19,10 @@ class DataProcessor:
         self.market_data_files = market_data_files
         self.news_data_file = news_data_file
         self.market_scaler = MinMaxScaler()
+        device = "cuda" if torch.cuda.is_available() else "cpu"
         self.sentiment_analyzer = pipeline('sentiment-analysis',
-                                           model='distilbert/distilbert-base-uncased-finetuned-sst-2-english')
+                                           model='distilbert/distilbert-base-uncased-finetuned-sst-2-english',
+                                           device=device)
 
     def load_market_data(self):
         """Load and combine market data from multiple files"""
