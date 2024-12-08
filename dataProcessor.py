@@ -19,7 +19,8 @@ class DataProcessor:
         self.market_data_files = market_data_files
         self.news_data_file = news_data_file
         self.market_scaler = MinMaxScaler()
-        self.sentiment_analyzer = pipeline('sentiment-analysis')
+        self.sentiment_analyzer = pipeline('sentiment-analysis',
+                                           model='distilbert/distilbert-base-uncased-finetuned-sst-2-english')
 
     def load_market_data(self):
         """Load and combine market data from multiple files"""
@@ -40,24 +41,21 @@ class DataProcessor:
         processed_data = market_data.copy()
 
         for symbol in market_data.columns.levels[0]:
+            # Create a view of the data using .loc
+            symbol_data = processed_data.loc[:, symbol].copy()
+
             # Calculate technical indicators
-            symbol_data = processed_data[symbol]
+            symbol_data.loc[:, 'MA5'] = symbol_data['Close'].rolling(window=5).mean()
+            symbol_data.loc[:, 'MA20'] = symbol_data['Close'].rolling(window=20).mean()
+            symbol_data.loc[:, 'Returns'] = symbol_data['Close'].pct_change()
+            symbol_data.loc[:, 'Volatility'] = symbol_data['Returns'].rolling(window=20).std()
+            symbol_data.loc[:, 'Volume_MA5'] = symbol_data['Volume'].rolling(window=5).mean()
+            symbol_data.loc[:, 'Price_MA5_Ratio'] = symbol_data['Close'] / symbol_data['MA5']
 
-            # Adding Moving Averages
-            symbol_data['MA5'] = symbol_data['Close'].rolling(window=5).mean()
-            symbol_data['MA20'] = symbol_data['Close'].rolling(window=20).mean()
+            # Assign back to processed_data
+            processed_data.loc[:, symbol] = symbol_data
 
-            # Adding price momentum
-            symbol_data['Returns'] = symbol_data['Close'].pct_change()
-            symbol_data['Volatility'] = symbol_data['Returns'].rolling(window=20).std()
-
-            # Volume indicators
-            symbol_data['Volume_MA5'] = symbol_data['Volume'].rolling(window=5).mean()
-
-            # Price relative to moving averages
-            symbol_data['Price_MA5_Ratio'] = symbol_data['Close'] / symbol_data['MA5']
-
-        return processed_data.fillna(0)  # Fill NaN values with 0
+        return processed_data.fillna(0)
 
     def process_news_data(self):
         """Process news data and calculate sentiment scores"""
@@ -86,11 +84,15 @@ class DataProcessor:
         processed_market = self.process_market_features(market_data)
         news_sentiment = self.process_news_data()
 
+        # Flatten the multi-level columns before merging
+        processed_market_flat = processed_market.copy()
+        processed_market_flat.columns = ['_'.join(col).strip() for col in processed_market_flat.columns.values]
+
         # Combine market and news data
-        combined_data = processed_market.merge(news_sentiment,
-                                               left_index=True,
-                                               right_index=True,
-                                               how='left')
+        combined_data = processed_market_flat.merge(news_sentiment,
+                                                    left_index=True,
+                                                    right_index=True,
+                                                    how='left')
 
         # Fill missing sentiment values with 0
         combined_data['sentiment'] = combined_data['sentiment'].fillna(0)
