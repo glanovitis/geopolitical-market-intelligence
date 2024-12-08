@@ -119,7 +119,7 @@ class DataProcessor:
 
     def prepare_training_sequences(self, data, sequence_length=10):
         """
-        Prepare sequential data for training
+        Prepare sequential data for training with multiple targets
 
         Parameters:
         data (DataFrame): Normalized combined data
@@ -127,26 +127,21 @@ class DataProcessor:
 
         Returns:
         X (tensor): Input sequences
-        y (tensor): Target values
+        y (tensor): Target values for all stocks
         """
         sequences = []
         targets = []
 
-        # Debug print to see available columns
-        print("Available columns for training:", data.columns.tolist())
-
-        # Find Returns columns for each symbol
+        # Find all Returns columns
         returns_columns = [col for col in data.columns if 'Returns' in col]
         if not returns_columns:
-            raise ValueError("No Returns columns found in the data. Available columns: " + str(data.columns.tolist()))
+            raise ValueError("No Returns columns found in the data")
 
-        # Use the first symbol's Returns as target (you might want to modify this based on your needs)
-        target_column = returns_columns[0]
-        print(f"Using {target_column} as target variable")
+        print(f"Predicting returns for: {returns_columns}")
 
         for i in range(len(data) - sequence_length):
             sequence = data.iloc[i:i + sequence_length]
-            target = data.iloc[i + sequence_length][target_column]
+            target = data.iloc[i + sequence_length][returns_columns].values
 
             sequences.append(sequence.values)
             targets.append(target)
@@ -155,7 +150,7 @@ class DataProcessor:
         X = torch.FloatTensor(np.array(sequences))
         y = torch.FloatTensor(np.array(targets))
 
-        return X, y
+        return X, y, returns_columns
 
     def create_train_test_split(self, X, y, train_ratio=0.8):
         """Split data into training and testing sets"""
@@ -167,30 +162,3 @@ class DataProcessor:
         y_test = y[split_idx:]
 
         return X_train, X_test, y_train, y_test
-
-
-# Example usage:
-def main():
-    market_files = ['AAPL_price_history.csv', 'GOOGL_price_history.csv', 'MSFT_price_history.csv',
-                    'AMZN_price_history.csv']
-    news_file = 'news_data.csv'
-
-    # Initialize data processor
-    processor = DataProcessor(market_files, news_file)
-
-    # Process and combine all data
-    processed_data = processor.combine_and_normalize_data()
-
-    # Prepare sequences for training
-    X, y = processor.prepare_training_sequences(processed_data)
-
-    # Split into training and testing sets
-    X_train, X_test, y_train, y_test = processor.create_train_test_split(X, y)
-
-    # Data is now ready for neural network training
-    print(f"Training data shape: {X_train.shape}")
-    print(f"Testing data shape: {X_test.shape}")
-
-
-if __name__ == "__main__":
-    main()
