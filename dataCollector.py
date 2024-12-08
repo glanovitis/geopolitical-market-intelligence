@@ -34,7 +34,7 @@ class MarketDataCollector:
                     'price_history': historical_data,
                     'info': stock.info,
                     'financials': stock.financials,
-                    'earnings': stock.earnings
+                    'earnings': stock.income_stmt.loc['Net Income']
                 }
             
             except Exception as e:
@@ -106,9 +106,15 @@ class MarketDataCollector:
 def main():
     # Define parameters
     financial_symbols = ['AAPL', 'GOOGL', 'MSFT', 'AMZN']
-    news_sources = ['bbc-news', 'cnn', 'financial-times']
-    start_date = '2023-01-01'
-    end_date = '2024-01-01'
+    news_sources = [
+        'bloomberg',
+        'business-insider',
+        'reuters',
+        'bbc-news',
+        'cnn'
+    ]
+    start_date = '2024-11-06'
+    end_date = '2024-12-05'
 
     # Create data collector
     collector = MarketDataCollector(
