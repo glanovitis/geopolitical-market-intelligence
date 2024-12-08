@@ -28,8 +28,11 @@ class DataProcessor:
         for file in self.market_data_files:
             symbol = file.split('_')[0]  # Extract symbol from filename
             df = pd.read_csv(file)
-            df['Date'] = pd.to_datetime(df['Date'])
+            # Convert to datetime and ensure timezone naive
+            df['Date'] = pd.to_datetime(df['Date']).dt.tz_localize(None)
             df.set_index('Date', inplace=True)
+            # Convert all numeric columns to float64
+            df = df.astype('float64')
             market_dfs[symbol] = df
 
         # Combine all market data
@@ -41,26 +44,28 @@ class DataProcessor:
         processed_data = market_data.copy()
 
         for symbol in market_data.columns.levels[0]:
-            # Create a view of the data using .loc
-            symbol_data = processed_data.loc[:, symbol].copy()
+            # Create a view of the data using .loc and ensure float64 dtype
+            symbol_data = processed_data.loc[:, symbol].astype('float64').copy()
 
             # Calculate technical indicators
-            symbol_data.loc[:, 'MA5'] = symbol_data['Close'].rolling(window=5).mean()
-            symbol_data.loc[:, 'MA20'] = symbol_data['Close'].rolling(window=20).mean()
-            symbol_data.loc[:, 'Returns'] = symbol_data['Close'].pct_change()
-            symbol_data.loc[:, 'Volatility'] = symbol_data['Returns'].rolling(window=20).std()
-            symbol_data.loc[:, 'Volume_MA5'] = symbol_data['Volume'].rolling(window=5).mean()
-            symbol_data.loc[:, 'Price_MA5_Ratio'] = symbol_data['Close'] / symbol_data['MA5']
+            symbol_data['MA5'] = symbol_data['Close'].rolling(window=5).mean()
+            symbol_data['MA20'] = symbol_data['Close'].rolling(window=20).mean()
+            symbol_data['Returns'] = symbol_data['Close'].pct_change()
+            symbol_data['Volatility'] = symbol_data['Returns'].rolling(window=20).std()
+            symbol_data['Volume_MA5'] = symbol_data['Volume'].rolling(window=5).mean()
+            symbol_data['Price_MA5_Ratio'] = symbol_data['Close'] / symbol_data['MA5']
 
-            # Assign back to processed_data
-            processed_data.loc[:, symbol] = symbol_data
+            # Update the original data with new columns
+            for col in symbol_data.columns:
+                processed_data.loc[:, (symbol, col)] = symbol_data[col]
 
         return processed_data.fillna(0)
 
     def process_news_data(self):
         """Process news data and calculate sentiment scores"""
         news_df = pd.read_csv(self.news_data_file)
-        news_df['published_at'] = pd.to_datetime(news_df['published_at'])
+        # Convert to datetime and make it timezone naive
+        news_df['published_at'] = pd.to_datetime(news_df['published_at']).dt.tz_localize(None)
 
         # Calculate sentiment scores for news titles and descriptions
         sentiments = defaultdict(list)
@@ -86,7 +91,11 @@ class DataProcessor:
 
         # Flatten the multi-level columns before merging
         processed_market_flat = processed_market.copy()
+        # Join column names with underscore, preserving all column names including technical indicators
         processed_market_flat.columns = ['_'.join(col).strip() for col in processed_market_flat.columns.values]
+
+        # Debug print
+        print("Available columns after flattening:", processed_market_flat.columns.tolist())
 
         # Combine market and news data
         combined_data = processed_market_flat.merge(news_sentiment,
@@ -100,6 +109,9 @@ class DataProcessor:
         # Normalize numerical features
         numerical_columns = combined_data.select_dtypes(include=[np.number]).columns
         combined_data[numerical_columns] = self.market_scaler.fit_transform(combined_data[numerical_columns])
+
+        # Debug print
+        print("Final columns:", combined_data.columns.tolist())
 
         return combined_data
 
@@ -118,9 +130,21 @@ class DataProcessor:
         sequences = []
         targets = []
 
+        # Debug print to see available columns
+        print("Available columns for training:", data.columns.tolist())
+
+        # Find Returns columns for each symbol
+        returns_columns = [col for col in data.columns if 'Returns' in col]
+        if not returns_columns:
+            raise ValueError("No Returns columns found in the data. Available columns: " + str(data.columns.tolist()))
+
+        # Use the first symbol's Returns as target (you might want to modify this based on your needs)
+        target_column = returns_columns[0]
+        print(f"Using {target_column} as target variable")
+
         for i in range(len(data) - sequence_length):
             sequence = data.iloc[i:i + sequence_length]
-            target = data.iloc[i + sequence_length]['Returns']  # Predict next day's returns
+            target = data.iloc[i + sequence_length][target_column]
 
             sequences.append(sequence.values)
             targets.append(target)
