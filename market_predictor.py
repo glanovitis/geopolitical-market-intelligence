@@ -6,6 +6,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from model_trainer import LSTM
 from data_processor import DataProcessor
+from tqdm import tqdm
 
 
 class MarketPredictor:
@@ -40,49 +41,84 @@ class MarketPredictor:
         model.eval()
         return model
 
-    def predict(self, market_data, news_data):
-        """Make predictions for all stocks"""
-        # Process data
-        processed_data = self.processor.combine_and_normalize_data()
-        X, _, returns_columns = self.processor.prepare_training_sequences(processed_data)
+    def predict(self, market_data, news_data, batch_size=32):
+        """
+        Make predictions for all stocks using batch processing
 
-        # Convert to tensor and predict
-        X = torch.FloatTensor(X).to(self.device)
-        with torch.no_grad():
-            predictions = self.model(X)
+        Parameters:
+            market_data: Market data input
+            news_data: News data input
+            batch_size: Number of samples to process at once (default: 32)
+        """
+        try:
+            # Process data
+            processed_data = self.processor.combine_and_normalize_data()
+            X, _, returns_columns = self.processor.prepare_training_sequences(processed_data)
 
-        # Convert predictions to numpy
-        normalized_predictions = predictions.cpu().numpy()
+            # Initialize list to store predictions
+            predictions = []
+    
+            # Calculate total number of batches
+            total_batches = (len(X) + batch_size - 1) // batch_size
 
-        # Get the scaler from the processor
-        scaler = self.processor.market_scaler
+            # Single loop with tqdm progress indicator
+            for batch_start in tqdm(range(0, len(X), batch_size), total=total_batches, desc="Processing batches"):
+                try:
+                    # Get current batch
+                    batch_end = min(batch_start + batch_size, len(X))  # Ensure we don't go past the end
+                    batch_X = torch.FloatTensor(X[batch_start:batch_end]).to(self.device)
 
-        # Prepare for inverse transform
-        pred_reshaped = np.zeros((normalized_predictions.shape[0], len(scaler.scale_)))
+                    # Make predictions for current batch
+                    with torch.no_grad():  # Disable gradient calculation for inference
+                        batch_predictions = self.model(batch_X)
+                        predictions.append(batch_predictions.cpu().numpy())
+                except RuntimeError as e:
+                    if "out of memory" in str(e):
+                        # Clear cache and try with smaller batch
+                        if torch.cuda.is_available():
+                            torch.cuda.empty_cache()
+                        batch_size = batch_size // 2
+                        if batch_size < 1:
+                            raise
+                        continue
+                    raise
 
-        # Put predictions in the correct columns
-        for i, col in enumerate(returns_columns):
-            col_idx = list(processed_data.columns).index(col)
-            pred_reshaped[:, col_idx] = normalized_predictions[:, i]
 
-        # Inverse transform
-        original_scale_full = scaler.inverse_transform(pred_reshaped)
+            # Combine all batch predictions
+            normalized_predictions = np.vstack(predictions)
 
-        # Extract returns for each stock
-        results = {}
-        for i, col in enumerate(returns_columns):
-            col_idx = list(processed_data.columns).index(col)
-            results[col] = original_scale_full[:, col_idx]
+            # Get the scaler from the processor
+            scaler = self.processor.market_scaler
 
-        return {
-            'normalized': normalized_predictions,
-            'original_scale': results
-        }
+            # Prepare for inverse transform
+            pred_reshaped = np.zeros((normalized_predictions.shape[0], len(scaler.scale_)))
+
+            # Put predictions in the correct columns
+            for i, col in enumerate(returns_columns):
+                col_idx = list(processed_data.columns).index(col)
+                pred_reshaped[:, col_idx] = normalized_predictions[:, i]
+
+            # Inverse transform
+            original_scale_full = scaler.inverse_transform(pred_reshaped)
+
+            # Extract returns for each stock
+            results = {}
+            for i, col in enumerate(returns_columns):
+                col_idx = list(processed_data.columns).index(col)
+                results[col] = original_scale_full[:, col_idx]
+
+            return {
+                'normalized': normalized_predictions,
+                'original_scale': results
+            }
+        except Exception as e:
+            print(f"Error during prediction: {e}")
+            raise
 
     def compare_predictions_with_actual(self, market_data, news_data):
         """Compare predicted returns with actual returns for all stocks"""
         # Get predictions
-        predictions = self.predict(market_data, news_data)
+        predictions = self.predict(market_data, news_data, batch_size=64)
 
         # Get actual returns from processed data
         processed_data = self.processor.combine_and_normalize_data()

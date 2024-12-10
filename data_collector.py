@@ -4,6 +4,7 @@ import requests
 from newsapi import NewsApiClient
 from datetime import datetime, timedelta
 from config import NEWS_API_KEY, MARKET_SYMBOLS, NEWS_SOURCES
+from tenacity import retry, stop_after_attempt, wait_exponential
 
 
 class MarketDataCollector:
@@ -47,10 +48,10 @@ class MarketDataCollector:
         
         return market_data
 
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
     def collect_news_data(self):
-        """
-        Collect news articles related to financial markets
-        """
+        """Collect news articles with retry mechanism"""
+        """Collect news articles related to financial markets"""
         news_data = []
         
         # Iterate through predefined news sources

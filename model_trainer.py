@@ -1,4 +1,4 @@
-# model_trainer.py
+from data_processor import DataProcessor
 import torch
 import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
@@ -22,33 +22,81 @@ class MarketDataset(Dataset):
     def __getitem__(self, idx):
         return self.X[idx], self.y[idx]
 
-
 class LSTM(nn.Module):
     def __init__(self, input_size, hidden_size, num_layers, dropout, num_stocks):
         super(LSTM, self).__init__()
         self.hidden_size = hidden_size
         self.num_layers = num_layers
 
-        self.lstm = nn.LSTM(
+        # Separate LSTMs for market and political data
+        self.market_lstm = nn.LSTM(
             input_size=input_size,
             hidden_size=hidden_size,
             num_layers=num_layers,
             dropout=dropout if num_layers > 1 else 0,
-            batch_first=True
+            batch_first=True,
+            bidirectional=True
+        )
+        
+        self.political_lstm = nn.LSTM(
+            input_size=5,  # Number of political features
+            hidden_size=hidden_size // 2,
+            num_layers=2,
+            dropout=dropout,
+            batch_first=True,
+            bidirectional=True
+        )
+        
+        # Attention mechanisms
+        self.market_attention = nn.Sequential(
+            nn.Linear(hidden_size * 2, hidden_size),
+            nn.Tanh(),
+            nn.Linear(hidden_size, 1)
+        )
+        
+        self.political_attention = nn.Sequential(
+            nn.Linear(hidden_size, hidden_size // 2),
+            nn.Tanh(),
+            nn.Linear(hidden_size // 2, 1)
+        )
+        
+        # Feature fusion layer
+        self.fusion = nn.Sequential(
+            nn.Linear(hidden_size * 3, hidden_size),
+            nn.ReLU(),
+            nn.Dropout(dropout)
+        )
+        
+        # Prediction layers
+        self.fc_layers = nn.Sequential(
+            nn.Linear(hidden_size, hidden_size // 2),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_size // 2, num_stocks)
         )
 
-        self.dropout = nn.Dropout(dropout)
-        # Output layer now predicts returns for all stocks
-        self.fc = nn.Linear(hidden_size, num_stocks)
-
     def forward(self, x):
-        lstm_out, _ = self.lstm(x)
-        # Take only the last time step output
-        last_time_step = lstm_out[:, -1, :]
-        out = self.dropout(last_time_step)
-        predictions = self.fc(out)
+        # Split input into market and political features
+        market_features = x[:, :, :-5]  # All but last 5 features
+        political_features = x[:, :, -5:]  # Last 5 features
+        
+        # Process market data
+        market_out, _ = self.market_lstm(market_features)
+        market_attention = self.market_attention(market_out)
+        market_context = torch.sum(market_attention * market_out, dim=1)
+        
+        # Process political data
+        political_out, _ = self.political_lstm(political_features)
+        political_attention = self.political_attention(political_out)
+        political_context = torch.sum(political_attention * political_out, dim=1)
+        
+        # Combine features
+        combined = torch.cat([market_context, political_context], dim=1)
+        fused = self.fusion(combined)
+        
+        # Make predictions
+        predictions = self.fc_layers(fused)
         return predictions
-
 
 class ModelTrainer:
     def __init__(self, config):
@@ -88,14 +136,16 @@ class ModelTrainer:
 
         return train_loader, test_loader
 
-    def train_model(self, X_train, X_test, y_train, y_test):
+    def train_model(self, X_train, X_test, y_train, y_test, returns_columns):
         """Train the model and return training history"""
-        # Initialize model
+        # Initialize model with number of stocks
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         model = LSTM(
             input_size=self.config['input_size'],
             hidden_size=self.config['hidden_size'],
             num_layers=self.config['num_layers'],
-            dropout=self.config['dropout']
+            dropout=self.config['dropout'],
+            num_stocks=len(returns_columns)  # Number of stocks to predict
         ).to(self.device)
 
         # Create dataloaders
@@ -206,6 +256,12 @@ class ModelTrainer:
             y_pred = y_pred.cpu().numpy()
 
             # Calculate metrics
+            # Normalisiere die Aufmerksamkeitsgewichte mit Softmax
+            market_attention_weights = torch.softmax(market_attention, dim=1)
+            market_context = torch.sum(market_attention_weights * market_out, dim=1)
+
+            political_attention_weights = torch.softmax(political_attention, dim=1)
+            political_context = torch.sum(political_attention_weights * political_out, dim=1)
             mse = mean_squared_error(y_true, y_pred)
             rmse = np.sqrt(mse)
             r2 = r2_score(y_true, y_pred)
@@ -218,46 +274,41 @@ class ModelTrainer:
 
             return metrics
 
-
 # Example usage
 def main():
-    # Configuration
-    config = {
-        'input_size': 53,  # Number of features
-        'hidden_size': 128,
-        'num_layers': 2,
-        'dropout': 0.2,
-        'batch_size': 32,
-        'learning_rate': 0.001,
-        'epochs': 100,
-        'patience': 10
-    }
-
-    # Initialize trainer
-    trainer = ModelTrainer(config)
-
-    # Assuming you have your data prepared from data_processor.py
-    from data_processor import DataProcessor
-
-    # Initialize and prepare data
+    # Define data files
     market_files = ['AAPL_price_history.csv', 'GOOGL_price_history.csv',
-                    'MSFT_price_history.csv', 'AMZN_price_history.csv']
+                   'MSFT_price_history.csv', 'AMZN_price_history.csv']
     news_file = 'news_data.csv'
 
+    # Process data
     processor = DataProcessor(market_files, news_file)
     processed_data = processor.combine_and_normalize_data()
-    X, y = processor.prepare_training_sequences(processed_data)
-    X_train, X_test, y_train, y_test = processor.create_train_test_split(X, y)
+    X, y, returns_columns = processor.prepare_training_sequences(processed_data, sequence_length=2520)
+    X_train, X_test, y_train, y_test = processor.create_train_test_split(X, y, train_ratio=0.8)
 
-    # Train model
-    model, history = trainer.train_model(X_train, X_test, y_train, y_test)
+    # Enhanced configuration
+    config = {
+        'input_size': X.shape[2],  # Number of features
+        'hidden_size': 512,        # Increased for more capacity
+        'num_layers': 4,          # More layers for complex patterns
+        'dropout': 0.4,           # Increased to prevent overfitting
+        'batch_size': 32,         # Reduced due to larger sequences
+        'learning_rate': 0.0001,  # Reduced for stability
+        'epochs': 300,            # Increased for better convergence
+        'patience': 25,           # Increased patience
+        'sequence_length': 2520   # 10 years of trading days
+    }
+
+    # Initialize trainer and train model
+    trainer = ModelTrainer(config)
+    model, history = trainer.train_model(X_train, X_test, y_train, y_test, returns_columns)
 
     # Evaluate model
     metrics = trainer.evaluate_model(model, X_test, y_test)
     print("\nModel Evaluation Metrics:")
     for metric, value in metrics.items():
         print(f"{metric.upper()}: {value:.6f}")
-
 
 if __name__ == "__main__":
     main()
