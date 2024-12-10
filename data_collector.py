@@ -19,34 +19,34 @@ class MarketDataCollector:
 
         # Initialize News API with key from config
         self.newsapi = NewsApiClient(api_key=NEWS_API_KEY)
-
+    
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
     def collect_market_data(self):
-        """
-        Collect historical financial data for specified symbols
-        """
+        failed_symbols = []
         market_data = {}
         
         for symbol in self.financial_symbols:
             try:
-                # Download historical stock data
                 stock = yf.Ticker(symbol)
                 historical_data = stock.history(
-                    start=self.start_date, 
+                    start=self.start_date,
                     end=self.end_date
                 )
-                
-                # Additional financial metrics
+                if historical_data.empty:
+                    raise ValueError(f"No data received for {symbol}")
+                    
                 market_data[symbol] = {
                     'price_history': historical_data,
-                    'info': stock.info,
-                    'financials': stock.financials,
-                    'earnings': stock.income_stmt.loc['Net Income']
+                    'info': stock.info
                 }
-            
             except Exception as e:
-                print(f"Error collecting data for {symbol}: {e}")
+                failed_symbols.append((symbol, str(e)))
+                logger.error(f"Failed to collect data for {symbol}: {e}")
         
-        return market_data
+        if len(failed_symbols) == len(self.financial_symbols):
+            raise RuntimeError("Failed to collect data for all symbols")
+            
+        return market_data, failed_symbols
 
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
     def collect_news_data(self):

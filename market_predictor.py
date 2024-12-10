@@ -51,38 +51,25 @@ class MarketPredictor:
             batch_size: Number of samples to process at once (default: 32)
         """
         try:
-            # Process data
             processed_data = self.processor.combine_and_normalize_data()
             X, _, returns_columns = self.processor.prepare_training_sequences(processed_data)
-
-            # Initialize list to store predictions
+        
             predictions = []
-    
-            # Calculate total number of batches
-            total_batches = (len(X) + batch_size - 1) // batch_size
-
-            # Single loop with tqdm progress indicator
-            for batch_start in tqdm(range(0, len(X), batch_size), total=total_batches, desc="Processing batches"):
-                try:
-                    # Get current batch
-                    batch_end = min(batch_start + batch_size, len(X))  # Ensure we don't go past the end
-                    batch_X = torch.FloatTensor(X[batch_start:batch_end]).to(self.device)
-
-                    # Make predictions for current batch
-                    with torch.no_grad():  # Disable gradient calculation for inference
-                        batch_predictions = self.model(batch_X)
-                        predictions.append(batch_predictions.cpu().numpy())
-                except RuntimeError as e:
-                    if "out of memory" in str(e):
-                        # Clear cache and try with smaller batch
-                        if torch.cuda.is_available():
-                            torch.cuda.empty_cache()
-                        batch_size = batch_size // 2
-                        if batch_size < 1:
-                            raise
-                        continue
-                    raise
-
+            # Process in batches to avoid memory issues
+            for i in range(0, len(X), batch_size):
+                batch = torch.FloatTensor(X[i:i+batch_size]).to(self.device)
+                with torch.no_grad():
+                    batch_pred = self.model(batch)
+                    predictions.append(batch_pred.cpu().numpy())
+                
+            return np.vstack(predictions)
+        except RuntimeError as e:
+            if "out of memory" in str(e):
+                # Clear cache and retry with smaller batch
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                return self.predict(market_data, news_data, batch_size // 2)
+            raise
 
             # Combine all batch predictions
             normalized_predictions = np.vstack(predictions)

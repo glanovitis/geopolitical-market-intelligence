@@ -6,6 +6,7 @@ from datetime import datetime
 import torch
 from collections import defaultdict
 from statsmodels.tsa.seasonal import seasonal_decompose
+import logging
 
 class DataProcessor:
     def __init__(self, market_data_files, news_data_file):
@@ -49,35 +50,22 @@ class DataProcessor:
         return combined_market
 
     def process_market_features(self, market_data):
-        """Process and engineer market features"""
-
+        if market_data is None or market_data.empty:
+            raise ValueError("Market data cannot be empty")
+    
         processed_data = market_data.copy()
-
-        try:
-            processed_data = market_data.copy()
-            for symbol in market_data.columns.levels[0]:
-                symbol_data = processed_data.loc[:, symbol].astype('float64').copy()
-                # Add error checking for numerical operations
-                if symbol_data['Close'].isnull().any():
-                    print(f"Warning: Missing values in Close price for {symbol}")
-                    
-                # Calculate technical indicators
-                symbol_data['MA5'] = symbol_data['Close'].rolling(window=5).mean()
-                symbol_data['MA20'] = symbol_data['Close'].rolling(window=20).mean()
-                symbol_data['Returns'] = symbol_data['Close'].pct_change()
-                symbol_data['Volatility'] = symbol_data['Returns'].rolling(window=20).std()
-                symbol_data['Volume_MA5'] = symbol_data['Volume'].rolling(window=5).mean()
-                symbol_data['Price_MA5_Ratio'] = symbol_data['Close'] / symbol_data['MA5']
-
-            # Update the original data with new columns
-            for col in symbol_data.columns:
-                processed_data.loc[:, (symbol, col)] = symbol_data[col]
-
-        except Exception as e:
-            print(f"Error processing market features: {e}")
-            raise
-
-        return processed_data.fillna(0)
+    
+        # Validate data types
+        if not all(processed_data.dtypes == np.float64):
+            raise ValueError("All market data must be float64")
+    
+        # Handle missing values more carefully
+        missing_count = processed_data.isnull().sum()
+        if missing_count.any():
+            logger.warning(f"Missing values detected: {missing_count}")
+        
+        # Use forward fill then backward fill instead of zero
+        return processed_data.ffill().bfill()
 
     def process_news_data(self):
         """Process 10 years of news data with enhanced political sentiment analysis"""
