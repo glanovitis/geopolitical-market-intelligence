@@ -18,10 +18,39 @@ class GuardianNewsCollector:
         self.base_url = "https://content.guardianapis.com/search"
         self.request_delay = 1
         self.max_retries = 3
+        self.chunk_size_months = 6  # Process 6 months at a time
+
+    def _get_date_chunks(self, start_date: datetime, end_date: datetime):
+        """Break the date range into smaller chunks"""
+        chunks = []
+        current_start = start_date
+        while current_start < end_date:
+            current_end = min(
+                current_start + relativedelta(months=self.chunk_size_months),
+                end_date
+            )
+            chunks.append((current_start, current_end))
+            current_start = current_end
+        return chunks
 
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
     def collect_historical_news(self, start_date: datetime, end_date: datetime) -> List[Dict]:
         all_articles = []
+        date_chunks = self._get_date_chunks(start_date, end_date)
+
+        for chunk_start, chunk_end in date_chunks:
+            logging.info(f"Collecting news for period: {chunk_start.date()} to {chunk_end.date()}")
+            chunk_articles = self._collect_chunk(chunk_start, chunk_end)
+            all_articles.extend(chunk_articles)
+
+            # Save chunk immediately to avoid memory issues
+            self._save_chunk(chunk_articles, chunk_start.strftime('%Y%m'))
+
+        return all_articles
+
+    def _collect_chunk(self, start_date: datetime, end_date: datetime) -> List[Dict]:
+        """Collect news for a specific time chunk"""
+        articles = []
         current_page = 1
 
         params = {
@@ -43,15 +72,14 @@ class GuardianNewsCollector:
                 if not data['results']:
                     break
 
-                articles = data['results']
-                all_articles.extend(articles)
-
-                logging.info(f"Collected page {current_page}, total articles: {len(all_articles)}")
+                articles.extend(data['results'])
+                logging.info(f"Collected page {current_page}, articles in chunk: {len(articles)}")
 
                 if current_page >= data['pages']:
                     break
 
                 current_page += 1
+                time.sleep(self.request_delay)  # Rate limiting
 
             except Exception as e:
                 logging.error(f"Error collecting page {current_page}: {e}")
@@ -59,7 +87,18 @@ class GuardianNewsCollector:
                     raise
                 break
 
-        return all_articles
+        return articles
+
+    def _save_chunk(self, articles: List[Dict], chunk_id: str):
+        """Save a chunk of articles to temporary storage"""
+        if not articles:
+            return
+
+        temp_dir = 'data/temp_chunks'
+        os.makedirs(temp_dir, exist_ok=True)
+
+        df = pd.DataFrame(articles)
+        df.to_csv(f'{temp_dir}/chunk_{chunk_id}.csv', index=False)
 
 
 class MarketDataCollector:
@@ -87,8 +126,8 @@ class MarketDataCollector:
             raise ValueError("GUARDIAN_API_KEY not found in config")
         self.news_collector = GuardianNewsCollector(GUARDIAN_API_KEY, self.news_keywords)
 
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
     def collect_market_data(self):
+        """Collect market data for specified symbols"""
         failed_symbols = []
         market_data = {}
 
@@ -106,6 +145,7 @@ class MarketDataCollector:
                     'price_history': historical_data,
                     'info': stock.info
                 }
+                logging.info(f"Successfully collected data for {symbol}")
             except Exception as e:
                 failed_symbols.append((symbol, str(e)))
                 logging.error(f"Failed to collect data for {symbol}: {e}")
@@ -117,13 +157,76 @@ class MarketDataCollector:
 
     def collect_news_data(self):
         """Collect news articles from The Guardian"""
-        return self.news_collector.collect_historical_news(self.start_date, self.end_date)
+        # Initialize empty list for all news
+        all_news = []
+
+        try:
+            # Call GuardianNewsCollector's collect_historical_news method
+            articles = self.news_collector.collect_historical_news(
+                start_date=self.start_date,
+                end_date=self.end_date
+            )
+            all_news.extend(articles)
+            logging.info(f"Collected {len(articles)} articles from The Guardian")
+
+        except Exception as e:
+            logging.error(f"Error collecting news data: {e}")
+
+        return all_news
+
+    def save_to_csv(self, dataset):
+        """Save collected data with improved organization and memory handling"""
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        base_dir = f'data/collection_{timestamp}'
+        os.makedirs(f'{base_dir}/market_data', exist_ok=True)
+        os.makedirs(f'{base_dir}/news_data', exist_ok=True)
+
+        # Save market data by year
+        for symbol, data in dataset['market_data'].items():
+            df = data['price_history']
+            df['year'] = df.index.year
+            for year, year_data in df.groupby('year'):
+                filename = f'{base_dir}/market_data/{symbol}_price_history_{year}.csv'
+                year_data.to_csv(filename)
+                logging.info(f"Saved market data for {symbol} year {year}")
+
+        # Save news data by year with chunking
+        news_df = pd.DataFrame(dataset['news_data'])
+        if not news_df.empty:
+            news_df['year'] = pd.to_datetime(news_df['webPublicationDate']).dt.year
+            for year, year_data in news_df.groupby('year'):
+                filename = f'{base_dir}/news_data/news_{year}.csv'
+                year_data.to_csv(filename, index=False)
+                logging.info(f"Saved {len(year_data)} news articles for year {year}")
+
+        # Save metadata with statistics
+        metadata = dataset['metadata']
+        metadata.update({
+            'statistics': {
+                'total_news_articles': len(news_df) if not news_df.empty else 0,
+                'news_articles_by_year': news_df['year'].value_counts().to_dict() if not news_df.empty else {},
+                'market_data_coverage': {
+                    symbol: len(data['price_history'])
+                    for symbol, data in dataset['market_data'].items()
+                }
+            }
+        })
+
+        with open(f'{base_dir}/metadata.json', 'w') as f:
+            json.dump(metadata, f, indent=2)
+        logging.info(f"Saved metadata to {base_dir}/metadata.json")
 
     def prepare_combined_dataset(self):
         """Combine market and news data"""
+        logging.info("Starting to prepare combined dataset...")  # Add debug logging
+
+        logging.info("Collecting market data...")
         market_data, failed_symbols = self.collect_market_data()
+
+        logging.info("Collecting news data...")
         news_data = self.collect_news_data()
 
+        logging.info("Preparing combined dataset structure...")
         combined_dataset = {
             'market_data': market_data,
             'news_data': news_data,
@@ -136,61 +239,40 @@ class MarketDataCollector:
             }
         }
 
+        logging.info("Combined dataset prepared successfully")
         return combined_dataset
-
-    def save_to_csv(self, dataset):
-        """Save collected data to CSV files with better organization"""
-        # Create timestamp for the data collection
-        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        base_dir = f'data/collection_{timestamp}'
-        os.makedirs(f'{base_dir}/market_data', exist_ok=True)
-        os.makedirs(f'{base_dir}/news_data', exist_ok=True)
-
-        # Save market data
-        for symbol, data in dataset['market_data'].items():
-            filename = f'{base_dir}/market_data/{symbol}_price_history.csv'
-            data['price_history'].to_csv(filename)
-            logging.info(f"Saved market data for {symbol}")
-
-        # Save news data by year
-        news_df = pd.DataFrame(dataset['news_data'])
-        if not news_df.empty:
-            news_df['year'] = pd.to_datetime(news_df['webPublicationDate']).dt.year
-            for year, year_data in news_df.groupby('year'):
-                filename = f'{base_dir}/news_data/news_{year}.csv'
-                year_data.to_csv(filename, index=False)
-                logging.info(f"Saved {len(year_data)} news articles for year {year}")
-
-        # Save metadata
-        with open(f'{base_dir}/metadata.json', 'w') as f:
-            json.dump(dataset['metadata'], f, indent=2)
-        logging.info(f"Saved metadata to {base_dir}/metadata.json")
 
 
 def main():
-    # Set up logging
     logging.basicConfig(
         level=logging.INFO,
         format='%(asctime)s - %(levelname)s - %(message)s'
     )
+    logging.info("Starting data collection process...")
 
-    # Define parameters
     financial_symbols = ['AAPL', 'GOOGL', 'MSFT', 'AMZN']
     years_of_history = 10
 
-    # Create data collector
-    collector = MarketDataCollector(
-        financial_symbols=financial_symbols,
-        years_of_history=years_of_history
-    )
-
     try:
-        # Collect and save data
+        logging.info("Initializing MarketDataCollector...")
+        collector = MarketDataCollector(
+            financial_symbols=financial_symbols,
+            years_of_history=years_of_history
+        )
+
+        logging.info("Preparing combined dataset...")
         dataset = collector.prepare_combined_dataset()
+
+        logging.info("Saving data to CSV...")
         collector.save_to_csv(dataset)
+
         logging.info("Data collection completed successfully")
+
+    except AttributeError as e:
+        logging.error(f"AttributeError: Make sure you're running the latest version of the code. Error: {e}")
+        logging.error(f"Available methods: {dir(collector)}")
     except Exception as e:
-        logging.error(f"Data collection failed: {e}")
+        logging.error(f"Data collection failed: {e}", exc_info=True)
 
 
 if __name__ == "__main__":
