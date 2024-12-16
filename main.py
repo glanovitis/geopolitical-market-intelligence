@@ -1,37 +1,16 @@
 import streamlit as st
+from PIL.PcxImagePlugin import logger
 from dotenv import load_dotenv
 import os
 import warnings
 import logging
 from datetime import datetime
+import traceback
 from src.data.data_collector import MarketDataCollector
 from src.utils.data_processor import DataProcessor
-import glob
-import traceback
 
-# Configure logging and warnings
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
-warnings.filterwarnings('ignore', category=FutureWarning)
-warnings.filterwarnings('ignore', category=DeprecationWarning)
+# Configure logging
 logging.basicConfig(level=logging.INFO)
-# Setup logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
-
-
-def check_cuda():
-    """Check CUDA availability and setup"""
-    if torch.cuda.is_available():
-        device = torch.device("cuda")
-        logger.info(f"Using CUDA device: {torch.cuda.get_device_name(0)}")
-    else:
-        device = torch.device("cpu")
-        logger.info("CUDA not available, using CPU")
-    return device
-
 
 def main():
     st.title("Geopolitical Market Intelligence")
@@ -41,66 +20,83 @@ def main():
 
         # Define parameters
         financial_symbols = ['AAPL', 'GOOGL', 'MSFT', 'AMZN']
-        years_of_history = 10
-        sequence_length = 60  # 60 days of history for prediction
+        years_of_history = 1
+        sequence_length = 60
 
-        # Get data directory
+        # Setup data directories
         data_dir = 'data'
+        os.makedirs(data_dir, exist_ok=True)
+
+        # Find existing data collections
         collection_dirs = sorted([d for d in os.listdir(data_dir)
                                   if d.startswith('collection_') and
                                   os.path.isdir(os.path.join(data_dir, d))],
                                  reverse=True)
 
-        if not collection_dirs:
-            st.warning("No existing data found. Starting new data collection...")
-            # Collect new data...
+        with st.spinner('Processing data...'):
+            if not collection_dirs:
+                st.info("No existing data found. Starting new data collection...")
+                collector = MarketDataCollector(
+                    financial_symbols=financial_symbols,
+                    years_of_history=years_of_history
+                )
+                dataset = collector.prepare_combined_dataset()
+                collector.save_to_csv(dataset)
 
-        # Get the most recent data collection
-        latest_collection = collection_dirs[0]
-        base_dir = os.path.join(data_dir, latest_collection)
+                # Refresh collection dirs
+                collection_dirs = sorted([d for d in os.listdir(data_dir)
+                                          if d.startswith('collection_')],
+                                         reverse=True)
 
-        st.info(f"Using data from collection: {latest_collection}")
+            # Get latest collection
+            latest_collection = collection_dirs[0]
+            base_dir = os.path.join(data_dir, latest_collection)
+            market_dir = os.path.join(base_dir, 'market_data')
+            news_dir = os.path.join(base_dir, 'news_data')
 
-        # Get market and news files
-        market_files = glob.glob(os.path.join(base_dir, 'market_data', '*.csv'))
-        news_files = sorted(glob.glob(os.path.join(base_dir, 'news_data', '*.csv')))
+            st.info(f"Using data from collection: {latest_collection}")
 
-        if not market_files or not news_files:
-            raise FileNotFoundError("Missing required data files")
+            # Get data files
+            market_files = [os.path.join(market_dir, f) for f in os.listdir(market_dir)
+                            if f.endswith('.csv')]
+            news_files = sorted([os.path.join(news_dir, f) for f in os.listdir(news_dir)
+                                 if f.endswith('.csv')])
 
-        st.write(f"Found {len(market_files)} market data files")
-        st.write(f"Found {len(news_files)} news data files")
+            if not market_files:
+                raise FileNotFoundError(f"No market data files found in {market_dir}")
+            if not news_files:
+                raise FileNotFoundError(f"No news data files found in {news_dir}")
 
-        # Process data
-        processor = DataProcessor(market_files, news_files[-1])
-        processed_data = processor.combine_and_normalize_data()
+            st.write(f"Found {len(market_files)} market data files")
+            st.write(f"Found {len(news_files)} news data files")
 
-        # Prepare sequences
-        X, y, returns_columns = processor.prepare_training_sequences(
-            processed_data,
-            sequence_length=sequence_length
-        )
+            # Process data
+            processor = DataProcessor(market_files, news_files[-1])
+            processed_data = processor.combine_and_normalize_data()
 
-        # Display dataset information
-        st.subheader("Dataset Statistics")
-        st.write(f"Total sequences: {len(X)}")
-        st.write(f"Sequence length: {sequence_length} days")
-        st.write(f"Number of features: {X.shape[2]}")
-        st.write(f"Target variables: {returns_columns}")
+            # Prepare sequences
+            X, y, returns_columns = processor.prepare_training_sequences(
+                processed_data,
+                sequence_length=sequence_length
+            )
 
-        # Create train-test split
-        X_train, X_val, X_test, y_train, y_val, y_test = processor.create_train_test_split(X, y)
+            # Create splits
+            X_train, X_val, X_test, y_train, y_val, y_test = processor.create_train_test_split(X, y)
 
-        st.write(f"Training sequences: {len(X_train)}")
-        st.write(f"Validation sequences: {len(X_val)}")
-        st.write(f"Testing sequences: {len(X_test)}")
+            # Display statistics
+            st.subheader("Dataset Statistics")
+            st.write(f"Total sequences: {len(X)}")
+            st.write(f"Training sequences: {len(X_train)}")
+            st.write(f"Validation sequences: {len(X_val)}")
+            st.write(f"Testing sequences: {len(X_test)}")
+            st.write(f"Number of features: {X.shape[2]}")
+            st.write("Return columns:", returns_columns)
 
     except Exception as e:
         st.error(f"An error occurred: {str(e)}")
         logging.error(f"Detailed error: {str(e)}")
-        if hasattr(e, '__traceback__'):
-            logging.error("Full traceback:")
-            traceback.print_tb(e.__traceback__)
+        logging.error("Full traceback:")
+        logging.error(traceback.format_exc())
         raise
 
 
