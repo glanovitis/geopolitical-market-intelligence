@@ -29,20 +29,59 @@ class DataProcessor:
         """Load and combine market data from multiple files with 10-year history"""
         market_dfs = {}
         for file in self.market_data_files:
-            symbol = file.split('_')[0]  # Extract symbol from filename
-            df = pd.read_csv(file)
-            
-            # Convert to datetime and ensure timezone naive
-            df['Date'] = pd.to_datetime(df['Date']).dt.tz_localize(None)
-            
-            # Filter for last 10 years
-            ten_years_ago = pd.Timestamp.now() - pd.DateOffset(years=10)
-            df = df[df['Date'] >= ten_years_ago]
-            
-            df.set_index('Date', inplace=True)
-            # Convert all numeric columns to float64
-            df = df.astype('float64')
-            market_dfs[symbol] = df
+            try:
+                # Extract symbol from filename
+                symbol = os.path.basename(file).split('_')[0]
+
+                # Read the CSV file
+                df = pd.read_csv(file)
+
+                # Print debug information
+                print(f"Loading data for {symbol}")
+                print(f"Columns in file: {df.columns.tolist()}")
+                print(f"First few rows of Date column: {df['Date'].head()}")
+
+                # Convert to datetime with explicit format and error handling
+                try:
+                    # First try parsing as is
+                    df['Date'] = pd.to_datetime(df['Date'], errors='coerce')
+                except Exception as e:
+                    print(f"First datetime conversion attempt failed: {e}")
+                    try:
+                        # Try parsing with explicit format if needed
+                        df['Date'] = pd.to_datetime(df['Date'], format='%Y-%m-%d', errors='coerce')
+                    except Exception as e:
+                        print(f"Second datetime conversion attempt failed: {e}")
+                        raise
+
+                # Drop any rows where date conversion failed
+                df = df.dropna(subset=['Date'])
+
+                if df.empty:
+                    raise ValueError(f"No valid data remaining for {symbol} after date processing")
+
+                # Ensure timezone naive
+                if hasattr(df['Date'].dt, 'tz_localize'):
+                    df['Date'] = df['Date'].dt.tz_localize(None)
+
+                # Filter for last 10 years
+                ten_years_ago = pd.Timestamp.now() - pd.DateOffset(years=10)
+                df = df[df['Date'] >= ten_years_ago]
+
+                # Set index and convert numeric columns
+                df.set_index('Date', inplace=True)
+                numeric_columns = df.select_dtypes(include=[np.number]).columns
+                df[numeric_columns] = df[numeric_columns].astype('float64')
+
+                market_dfs[symbol] = df
+                print(f"Successfully processed {symbol} data")
+
+            except Exception as e:
+                print(f"Error processing file {file}: {e}")
+                continue
+
+        if not market_dfs:
+            raise ValueError("No market data could be processed")
 
         # Combine all market data
         combined_market = pd.concat(market_dfs.values(), axis=1, keys=market_dfs.keys())
