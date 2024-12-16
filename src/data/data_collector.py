@@ -6,6 +6,7 @@ from dateutil.relativedelta import relativedelta
 import logging
 import os
 import json
+import time
 from typing import List, Dict
 from tenacity import retry, stop_after_attempt, wait_exponential
 from config.config import GUARDIAN_API_KEY, MARKET_SYMBOLS

@@ -69,76 +69,110 @@ class DataProcessor:
 
     def process_news_data(self):
         """Process 10 years of news data with enhanced political sentiment analysis"""
-        news_df = pd.read_csv(self.news_data_file)
-        
-        # Convert to datetime and make it timezone naive
-        news_df['published_at'] = pd.to_datetime(news_df['published_at']).dt.tz_localize(None)
-        
-        # Filter for last 10 years
-        ten_years_ago = pd.Timestamp.now() - pd.DateOffset(years=10)
-        news_df = news_df[news_df['published_at'] >= ten_years_ago]
-        
-        # Create political sentiment analyzer with specific focus
-        political_topics = [
-            'policy', 'regulation', 'government', 'election', 'trade war',
-            'sanctions', 'federal reserve', 'interest rates', 'legislation',
-            'geopolitical', 'conflict', 'war', 'political crisis'
-        ]
-        
-        # Calculate daily sentiments with political context
-        sentiments = defaultdict(lambda: defaultdict(list))
-        
-        for _, row in news_df.iterrows():
-            date = row['published_at'].date()
-            text = f"{row['title']} {row['description']}"
-            
-            # Get general sentiment
-            sentiment = self.sentiment_analyzer(text)[0]
-            base_score = sentiment['score'] if sentiment['label'] == 'POSITIVE' else -sentiment['score']
-            
-            # Analyze political impact
-            political_impact = 0
-            for topic in political_topics:
-                if topic.lower() in text.lower():
-                    political_impact += 1
-            
-            # Categorize sentiment
-            sentiments[date]['general'].append(base_score)
-            sentiments[date]['political_impact'].append(political_impact)
-            
-            # Store the full text for topic modeling
-            sentiments[date]['texts'].append(text)
-        
-        # Create daily sentiment features
-        daily_features = {}
-        for date, scores in sentiments.items():
-            daily_features[date] = {
-                'sentiment_mean': np.mean(scores['general']),
-                'sentiment_std': np.std(scores['general']) if len(scores['general']) > 1 else 0,
-                'political_impact_score': np.mean(scores['political_impact']),
-                'news_volume': len(scores['general'])
-            }
-            
-            # Add rolling averages for trend analysis
-            if len(daily_features) >= 30:
-                prev_30_days = [
-                    daily_features[d]['sentiment_mean'] 
-                    for d in sorted(daily_features.keys())[-30:]
-                ]
-                daily_features[date]['sentiment_ma30'] = np.mean(prev_30_days)
-        
-        # Convert to DataFrame
-        sentiment_df = pd.DataFrame.from_dict(daily_features, orient='index')
-        sentiment_df.index = pd.to_datetime(sentiment_df.index)
-        
-        # Fill missing dates with forward fill then backward fill
-        full_date_range = pd.date_range(start=sentiment_df.index.min(), 
-                                      end=sentiment_df.index.max(), 
-                                      freq='B')  # Business days
-        sentiment_df = sentiment_df.reindex(full_date_range)
-        sentiment_df = sentiment_df.fillna(method='ffill').fillna(method='bfill')
-        
-        return sentiment_df
+        try:
+            news_df = pd.read_csv(self.news_data_file)
+
+            # Print the data types and first few rows for debugging
+            print("News data types:", news_df.dtypes)
+            print("First few rows of news data:", news_df.head())
+
+            # First ensure the published_at column exists
+            if 'published_at' not in news_df.columns:
+                # Check if 'webPublicationDate' exists (Guardian API uses this name)
+                if 'webPublicationDate' in news_df.columns:
+                    news_df['published_at'] = news_df['webPublicationDate']
+                else:
+                    raise ValueError("No publication date column found in news data")
+
+            # Convert to datetime, handling potential format issues
+            news_df['published_at'] = pd.to_datetime(news_df['published_at'], errors='coerce')
+
+            # Drop rows where conversion failed
+            news_df = news_df.dropna(subset=['published_at'])
+
+            # Make timezone naive
+            if hasattr(news_df['published_at'].dt, 'tz_localize'):
+                news_df['published_at'] = news_df['published_at'].dt.tz_localize(None)
+
+            # Filter for last 10 years
+            ten_years_ago = pd.Timestamp.now() - pd.DateOffset(years=10)
+            news_df = news_df[news_df['published_at'] >= ten_years_ago]
+
+            if news_df.empty:
+                raise ValueError("No news data found within the last 10 years")
+
+            # Create political sentiment analyzer with specific focus
+            political_topics = [
+                'policy', 'regulation', 'government', 'election', 'trade war',
+                'sanctions', 'federal reserve', 'interest rates', 'legislation',
+                'geopolitical', 'conflict', 'war', 'political crisis'
+            ]
+
+            # Calculate daily sentiments with political context
+            sentiments = defaultdict(lambda: defaultdict(list))
+
+            for _, row in news_df.iterrows():
+                try:
+                    date = row['published_at'].date()
+                    # Check if title and description exist, use empty string if not
+                    title = str(row.get('title', ''))
+                    description = str(row.get('description', ''))
+                    text = f"{title} {description}"
+
+                    # Get general sentiment
+                    sentiment = self.sentiment_analyzer(text)[0]
+                    base_score = sentiment['score'] if sentiment['label'] == 'POSITIVE' else -sentiment['score']
+
+                    # Analyze political impact
+                    political_impact = sum(1 for topic in political_topics if topic.lower() in text.lower())
+
+                    # Categorize sentiment
+                    sentiments[date]['general'].append(base_score)
+                    sentiments[date]['political_impact'].append(political_impact)
+                    sentiments[date]['texts'].append(text)
+
+                except Exception as e:
+                    print(f"Error processing row: {e}")
+                    continue
+
+            if not sentiments:
+                raise ValueError("No valid sentiment data could be processed")
+
+            # Create daily sentiment features
+            daily_features = {}
+            for date, scores in sentiments.items():
+                if scores['general']:  # Only process if we have sentiment scores
+                    daily_features[date] = {
+                        'sentiment_mean': np.mean(scores['general']),
+                        'sentiment_std': np.std(scores['general']) if len(scores['general']) > 1 else 0,
+                        'political_impact_score': np.mean(scores['political_impact']),
+                        'news_volume': len(scores['general'])
+                    }
+
+            # Convert to DataFrame
+            sentiment_df = pd.DataFrame.from_dict(daily_features, orient='index')
+
+            if sentiment_df.empty:
+                raise ValueError("No sentiment data was generated")
+
+            # Ensure index is datetime
+            sentiment_df.index = pd.to_datetime(sentiment_df.index)
+
+            # Fill missing dates with forward fill then backward fill
+            full_date_range = pd.date_range(
+                start=sentiment_df.index.min(),
+                end=sentiment_df.index.max(),
+                freq='B'  # Business days
+            )
+            sentiment_df = sentiment_df.reindex(full_date_range)
+            sentiment_df = sentiment_df.fillna(method='ffill').fillna(method='bfill')
+
+            return sentiment_df
+
+        except Exception as e:
+            print(f"Error in process_news_data: {e}")
+            print(f"News file path: {self.news_data_file}")
+            raise
 
     def combine_and_normalize_data(self):
         """Combine 10 years of market and news data with enhanced features"""
