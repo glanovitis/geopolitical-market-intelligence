@@ -1,0 +1,34 @@
+# Deep Learning Framework
+tensorflow>=2.12.0
+keras>=2.12.0
+
+# Data Processing and Analysis
+pandas>=2.0.0
+numpy>=1.23.0
+scikit-learn>=1.2.0
+
+# Natural Language Processing
+nltk>=3.8.1
+transformers>=4.30.0  # For advanced NLP models
+textblob>=0.17.1     # For sentiment analysis
+
+# Financial Data
+yfinance>=0.2.18     # Yahoo Finance API
+pandas-datareader>=0.10.0  # For financial data access
+
+# Data Visualization
+matplotlib>=3.7.0
+seaborn>=0.12.0
+plotly>=5.14.0
+
+# API Interactions and Web Requests
+requests>=2.31.0
+beautifulsoup4>=4.12.0  # For web scraping if needed
+aiohttp>=3.8.0      # For async API calls
+
+# Dashboard (Optional, for visualization component)
+streamlit>=1.24.0
+
+# Utilities
+python-dotenv>=1.0.0  # For environment variables
+pytest>=7.3.1        # For testing
