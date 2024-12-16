@@ -332,10 +332,13 @@ class DataProcessor:
             logging.info(f"Returns data index type: {type(returns_data.index)}")
             logging.info(f"News data index type: {type(news_features.index)}")
 
-            # Get overlapping date range
-            # Make it automatically find the overlapping date range
-            start_date = pd.Timestamp('2024-01-01')
-            end_date = pd.Timestamp('2024-12-13')
+            # Find overlapping date range automatically
+            start_date = max(market_data.index.min(),
+                             returns_data.index.min(),
+                             news_features.index.min())
+            end_date = min(market_data.index.max(),
+                           returns_data.index.max(),
+                           news_features.index.max())
 
             logging.info("\nFiltering dates:")
             logging.info(f"Start date: {start_date}")
@@ -362,15 +365,8 @@ class DataProcessor:
             logging.info(f"Returns data: {returns_filtered.index.min()} to {returns_filtered.index.max()}")
             logging.info(f"News data: {news_filtered.index.min()} to {news_filtered.index.max()}")
 
-            # Compare some specific dates
-            test_date = pd.Timestamp('2024-01-02')
-            logging.info(f"\nChecking specific date {test_date}:")
-            logging.info(f"In market data: {test_date in market_filtered.index}")
-            logging.info(f"In returns data: {test_date in returns_filtered.index}")
-            logging.info(f"In news data: {test_date in news_filtered.index}")
-
             # Combine filtered data
-            combined_data = pd.concat([market_filtered, returns_filtered, news_filtered], axis=1)
+            combined_data = pd.concat([returns_filtered, news_filtered], axis=1)
 
             logging.info(f"\nCombined data shape: {combined_data.shape}")
             logging.info(f"Combined date range: {combined_data.index.min()} to {combined_data.index.max()}")
