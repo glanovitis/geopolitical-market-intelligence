@@ -4,9 +4,8 @@ import os
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-from model_trainer import LSTM
+from src.utils.model_trainer import LSTM
 from src.utils.data_processor import DataProcessor
-from tqdm import tqdm
 
 
 class MarketPredictor:

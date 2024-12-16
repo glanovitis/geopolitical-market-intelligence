@@ -1,102 +1,164 @@
-import streamlit as st
-from PIL.PcxImagePlugin import logger
-from dotenv import load_dotenv
 import os
 import warnings
 import logging
-from datetime import datetime
+import torch
+import streamlit as st
+from dotenv import load_dotenv
+import glob
 import traceback
-from src.data.data_collector import MarketDataCollector
 from src.utils.data_processor import DataProcessor
+from src.utils.model_trainer import ModelTrainer
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
+# Configure logging and warnings
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
+warnings.filterwarnings('ignore', category=FutureWarning)
+warnings.filterwarnings('ignore', category=DeprecationWarning)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+
+def check_cuda():
+    """Check CUDA availability and setup"""
+    if torch.cuda.is_available():
+        device = torch.device("cuda")
+        logger.info(f"Using CUDA device: {torch.cuda.get_device_name(0)}")
+    else:
+        device = torch.device("cpu")
+        logger.info("CUDA not available, using CPU")
+    return device
+
 
 def main():
     st.title("Geopolitical Market Intelligence")
 
     try:
         load_dotenv()
+        device = check_cuda()
 
         # Define parameters
         financial_symbols = ['AAPL', 'GOOGL', 'MSFT', 'AMZN']
-        years_of_history = 1
-        sequence_length = 60
+        years_of_history = 10
+        sequence_length = 60  # 60 days of history for prediction
 
-        # Setup data directories
+        # Model hyperparameters
+        hyperparameters = {
+            'learning_rate': 0.0001,  # Reduced from 0.001
+            'batch_size': 16,  # Reduced from 32
+            'num_epochs': 100,
+            'hidden_size': 64,  # Reduced from 128
+            'num_layers': 2,
+            'dropout': 0.1  # Reduced from 0.2
+        }
+
+        # Get data directory
         data_dir = 'data'
-        os.makedirs(data_dir, exist_ok=True)
-
-        # Find existing data collections
         collection_dirs = sorted([d for d in os.listdir(data_dir)
                                   if d.startswith('collection_') and
                                   os.path.isdir(os.path.join(data_dir, d))],
                                  reverse=True)
 
-        with st.spinner('Processing data...'):
-            if not collection_dirs:
-                st.info("No existing data found. Starting new data collection...")
-                collector = MarketDataCollector(
-                    financial_symbols=financial_symbols,
-                    years_of_history=years_of_history
-                )
-                dataset = collector.prepare_combined_dataset()
-                collector.save_to_csv(dataset)
+        if not collection_dirs:
+            st.warning("No existing data found. Starting new data collection...")
+            return
 
-                # Refresh collection dirs
-                collection_dirs = sorted([d for d in os.listdir(data_dir)
-                                          if d.startswith('collection_')],
-                                         reverse=True)
+        # Get the most recent data collection
+        latest_collection = collection_dirs[0]
+        base_dir = os.path.join(data_dir, latest_collection)
 
-            # Get latest collection
-            latest_collection = collection_dirs[0]
-            base_dir = os.path.join(data_dir, latest_collection)
-            market_dir = os.path.join(base_dir, 'market_data')
-            news_dir = os.path.join(base_dir, 'news_data')
+        st.info(f"Using data from collection: {latest_collection}")
 
-            st.info(f"Using data from collection: {latest_collection}")
+        # Get market and news files
+        market_files = glob.glob(os.path.join(base_dir, 'market_data', '*.csv'))
+        news_files = sorted(glob.glob(os.path.join(base_dir, 'news_data', '*.csv')))
 
-            # Get data files
-            market_files = [os.path.join(market_dir, f) for f in os.listdir(market_dir)
-                            if f.endswith('.csv')]
-            news_files = sorted([os.path.join(news_dir, f) for f in os.listdir(news_dir)
-                                 if f.endswith('.csv')])
+        if not market_files or not news_files:
+            raise FileNotFoundError("Missing required data files")
 
-            if not market_files:
-                raise FileNotFoundError(f"No market data files found in {market_dir}")
-            if not news_files:
-                raise FileNotFoundError(f"No news data files found in {news_dir}")
+        st.write(f"Found {len(market_files)} market data files")
+        st.write(f"Found {len(news_files)} news data files")
 
-            st.write(f"Found {len(market_files)} market data files")
-            st.write(f"Found {len(news_files)} news data files")
+        # Remove cached files to force reprocessing
+        cached_data_path = os.path.join(base_dir, 'processed_data.pkl')
+        cached_sequences_path = os.path.join(base_dir, f'sequences_len{sequence_length}.npz')
 
-            # Process data
-            processor = DataProcessor(market_files, news_files[-1])
-            processed_data = processor.combine_and_normalize_data()
+        if os.path.exists(cached_data_path):
+            os.remove(cached_data_path)
+        if os.path.exists(cached_sequences_path):
+            os.remove(cached_sequences_path)
 
-            # Prepare sequences
-            X, y, returns_columns = processor.prepare_training_sequences(
+        # Initialize processor
+        processor = DataProcessor(market_files, news_files[-1])
+
+        # Load or process data
+        with st.spinner("Loading/Processing data..."):
+            processed_data = processor.load_or_process_data()
+            st.success("Data processing completed!")
+
+        # Load or create sequences
+        with st.spinner("Preparing sequences..."):
+            X, y, returns_columns = processor.load_or_create_sequences(
                 processed_data,
-                sequence_length=sequence_length
+                sequence_length
+            )
+            st.success("Sequence preparation completed!")
+
+        # Display dataset information
+        st.subheader("Dataset Statistics")
+        st.write(f"Total sequences: {len(X)}")
+        st.write(f"Sequence length: {sequence_length} days")
+        st.write(f"Number of features: {X.shape[2]}")
+        st.write(f"Target variables: {returns_columns}")
+
+        # Create train-test split
+        X_train, X_val, X_test, y_train, y_val, y_test = processor.create_train_test_split(X, y)
+
+        st.write(f"Training sequences: {len(X_train)}")
+        st.write(f"Validation sequences: {len(X_val)}")
+        st.write(f"Testing sequences: {len(X_test)}")
+
+        # Initialize and train model
+        st.subheader("Model Training")
+        with st.spinner("Training model..."):
+            trainer = ModelTrainer(
+                input_size=X.shape[2],
+                output_size=len(returns_columns),
+                device=device,
+                **hyperparameters
             )
 
-            # Create splits
-            X_train, X_val, X_test, y_train, y_val, y_test = processor.create_train_test_split(X, y)
+            # Train the model
+            training_progress = st.progress(0)
+            history = trainer.train(
+                X_train, y_train,
+                X_val, y_val,
+                progress_bar=training_progress
+            )
 
-            # Display statistics
-            st.subheader("Dataset Statistics")
-            st.write(f"Total sequences: {len(X)}")
-            st.write(f"Training sequences: {len(X_train)}")
-            st.write(f"Validation sequences: {len(X_val)}")
-            st.write(f"Testing sequences: {len(X_test)}")
-            st.write(f"Number of features: {X.shape[2]}")
-            st.write("Return columns:", returns_columns)
+            # Plot training history
+            st.subheader("Training History")
+            trainer.plot_training_history(history)
+
+            # Evaluate model
+            st.subheader("Model Evaluation")
+            test_loss, test_metrics = trainer.evaluate(X_test, y_test)
+
+            st.write("Test Results:")
+            st.write(f"Loss: {test_loss:.4f}")
+            for metric_name, value in test_metrics.items():
+                st.write(f"{metric_name}: {value:.4f}")
+
+            # Save the model
+            model_path = os.path.join(base_dir, 'trained_model.pth')
+            trainer.save_model(model_path)
+            st.success(f"Model saved to {model_path}")
 
     except Exception as e:
         st.error(f"An error occurred: {str(e)}")
         logging.error(f"Detailed error: {str(e)}")
-        logging.error("Full traceback:")
-        logging.error(traceback.format_exc())
+        logging.error(f"Full traceback: {traceback.format_exc()}")
         raise
 
 

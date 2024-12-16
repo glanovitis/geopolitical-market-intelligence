@@ -18,13 +18,100 @@ class DataProcessor:
         market_data_files (list): List of paths to market data CSV files
         news_data_file (str): Path to news data CSV file
         """
+
         self.market_data_files = market_data_files
         self.news_data_file = news_data_file
-        self.market_scaler = MinMaxScaler()
+        self.base_dir = os.path.dirname(os.path.dirname(market_data_files[0]))
+        self.scaler = None
+        logging.info(f"Initialized DataProcessor with base directory: {self.base_dir}")
+
         device = "cuda" if torch.cuda.is_available() else "cpu"
         self.sentiment_analyzer = pipeline('sentiment-analysis',
                                            model='distilbert/distilbert-base-uncased-finetuned-sst-2-english',
                                            device=device)
+
+    def load_or_process_data(self):
+        """Load processed data from cache or process it fresh"""
+        processed_data_path = os.path.join(self.base_dir, 'processed_data.pkl')
+
+        if os.path.exists(processed_data_path):
+            processed_time = os.path.getmtime(processed_data_path)
+            source_files_time = max(
+                max(os.path.getmtime(f) for f in self.market_data_files),
+                os.path.getmtime(self.news_data_file)
+            )
+
+            if processed_time > source_files_time:
+                logging.info("Loading preprocessed data from cache...")
+                try:
+                    data = pd.read_pickle(processed_data_path)
+                    # Handle NaN values
+                    self._handle_missing_values(data)
+                    return data
+                except Exception as e:
+                    logging.warning(f"Error loading cached data: {e}. Will reprocess.")
+
+        # Process data if cache doesn't exist or is outdated
+        return self.combine_and_normalize_data()
+
+    def _handle_missing_values(self, data):
+        """Handle missing values in the dataset"""
+        # Check for NaN values
+        nan_cols = data.columns[data.isna().any()].tolist()
+        if nan_cols:
+            logging.warning(f"NaN values found in columns: {nan_cols}")
+
+            # Fill NaN values using forward fill first
+            data.fillna(method='ffill', inplace=True)
+
+            # Then use backward fill for any remaining NaNs at the beginning
+            data.fillna(method='bfill', inplace=True)
+
+            # If there are still any NaNs, fill them with 0
+            if data.isna().any().any():
+                logging.warning("Some NaN values remain after forward/backward filling. Filling with 0.")
+                data.fillna(0, inplace=True)
+
+            logging.info("Missing values handled")
+
+        return data
+
+    def load_or_create_sequences(self, processed_data, sequence_length):
+        """Load sequences from cache or create them fresh"""
+        sequences_path = os.path.join(self.base_dir, f'sequences_len{sequence_length}.npz')
+
+        if os.path.exists(sequences_path):
+            processed_time = os.path.getmtime(sequences_path)
+            data_time = os.path.getmtime(os.path.join(self.base_dir, 'processed_data.pkl'))
+
+            if processed_time > data_time:
+                logging.info("Loading preprocessed sequences from cache...")
+                try:
+                    with np.load(sequences_path, allow_pickle=True) as data:
+                        return data['X'], data['y'], data['returns_columns']
+                except Exception as e:
+                    logging.warning(f"Error loading cached sequences: {e}. Will reprocess.")
+
+        # Create sequences if cache doesn't exist or is outdated
+        logging.info("Creating sequences from processed data...")
+        X, y, returns_columns = self.prepare_training_sequences(
+            processed_data,
+            sequence_length=sequence_length
+        )
+
+        # Save sequences
+        try:
+            np.savez_compressed(
+                sequences_path,
+                X=X,
+                y=y,
+                returns_columns=returns_columns
+            )
+            logging.info(f"Saved sequences to {sequences_path}")
+        except Exception as e:
+            logging.warning(f"Error saving sequences: {e}")
+
+        return X, y, returns_columns
 
     def _normalize_date_index(self, df):
         """
@@ -296,45 +383,68 @@ class DataProcessor:
             raise
 
     def prepare_training_sequences(self, data, sequence_length=20):
-        """Prepare sequences for training"""
+        """Prepare sequences with proper NaN handling"""
         try:
-            # Convert tuple column names to strings
-            data.columns = [f"{col[0]}_{col[1]}" if isinstance(col, tuple) else col
-                            for col in data.columns]
+            # Handle missing values first
+            data = self._handle_missing_values(data.copy())
 
-            logging.info(f"Columns after conversion: {data.columns.tolist()}")
+            # Log data statistics before normalization
+            logging.info("Data statistics before normalization:")
+            logging.info(f"Mean: {data.mean().mean():.4f}")
+            logging.info(f"Std: {data.std().mean():.4f}")
 
-            # Define feature columns (adjust these based on your column names)
-            price_columns = [col for col in data.columns if '_Close' in col]
-            volume_columns = [col for col in data.columns if '_Volume' in col]
-            returns_columns = [col for col in data.columns if '_Returns' in col]
-            sentiment_columns = ['sentiment_mean', 'sentiment_std', 'news_volume']
+            # Initialize and fit scaler if not already done
+            if self.scaler is None:
+                self.scaler = StandardScaler()
+                normalized_data = pd.DataFrame(
+                    self.scaler.fit_transform(data),
+                    columns=data.columns,
+                    index=data.index
+                )
+            else:
+                normalized_data = pd.DataFrame(
+                    self.scaler.transform(data),
+                    columns=data.columns,
+                    index=data.index
+                )
 
-            feature_columns = price_columns + volume_columns + sentiment_columns
-
-            logging.info(f"Selected features: {feature_columns}")
-
-            # Normalize features
-            scaler = StandardScaler()
-            features_normalized = scaler.fit_transform(data[feature_columns])
-            features_df = pd.DataFrame(features_normalized,
-                                       columns=feature_columns,
-                                       index=data.index)
+            # Verify normalization
+            logging.info("Data statistics after normalization:")
+            logging.info(f"Mean: {normalized_data.mean().mean():.4f}")
+            logging.info(f"Std: {normalized_data.std().mean():.4f}")
 
             # Create sequences
             X = []
             y = []
+            returns_columns = [col for col in normalized_data.columns if 'Returns' in col]
+            feature_columns = [col for col in normalized_data.columns
+                               if col not in returns_columns]
 
-            for i in range(len(features_df) - sequence_length):
-                X.append(features_df.iloc[i:i + sequence_length].values)
-                # Use next day's returns as target
-                next_returns = data[returns_columns].iloc[i + sequence_length]
-                y.append(next_returns.values)
+            for i in range(len(normalized_data) - sequence_length):
+                X_sequence = normalized_data[feature_columns].iloc[i:i + sequence_length].values
+                y_sequence = normalized_data[returns_columns].iloc[i + sequence_length].values
+
+                # Only add sequences with no NaN values
+                if not np.isnan(X_sequence).any() and not np.isnan(y_sequence).any():
+                    X.append(X_sequence)
+                    y.append(y_sequence)
 
             X = np.array(X)
             y = np.array(y)
 
-            logging.info(f"Prepared sequences shape: X={X.shape}, y={y.shape}")
+            # Final validation
+            if len(X) == 0 or len(y) == 0:
+                raise ValueError("No valid sequences could be created")
+
+            if np.isnan(X).any():
+                raise ValueError(f"NaN values in features: {np.isnan(X).sum()} / {X.size}")
+            if np.isnan(y).any():
+                raise ValueError(f"NaN values in targets: {np.isnan(y).sum()} / {y.size}")
+
+            logging.info(f"Created {len(X)} valid sequences")
+            logging.info(f"X shape: {X.shape}, y shape: {y.shape}")
+            logging.info(f"Feature statistics - Mean: {X.mean():.4f}, Std: {X.std():.4f}")
+            logging.info(f"Target statistics - Mean: {y.mean():.4f}, Std: {y.std():.4f}")
 
             return X, y, returns_columns
 
@@ -344,17 +454,25 @@ class DataProcessor:
             raise
 
     def create_train_test_split(self, X, y, train_size=0.7, val_size=0.15):
-        """Create train-validation-test split"""
-        n = len(X)
-        train_end = int(n * train_size)
-        val_end = int(n * (train_size + val_size))
+        """Create train/validation/test split"""
+        try:
+            n_samples = len(X)
+            train_end = int(n_samples * train_size)
+            val_end = int(n_samples * (train_size + val_size))
 
-        X_train = X[:train_end]
-        X_val = X[train_end:val_end]
-        X_test = X[val_end:]
+            X_train = X[:train_end]
+            y_train = y[:train_end]
 
-        y_train = y[:train_end]
-        y_val = y[train_end:val_end]
-        y_test = y[val_end:]
+            X_val = X[train_end:val_end]
+            y_val = y[train_end:val_end]
 
-        return X_train, X_val, X_test, y_train, y_val, y_test
+            X_test = X[val_end:]
+            y_test = y[val_end:]
+
+            logging.info(f"Train set: {X_train.shape}, Validation set: {X_val.shape}, Test set: {X_test.shape}")
+
+            return X_train, X_val, X_test, y_train, y_val, y_test
+
+        except Exception as e:
+            logging.error(f"Error in create_train_test_split: {str(e)}")
+            raise
