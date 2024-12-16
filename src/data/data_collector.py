@@ -8,7 +8,7 @@ import os
 import json
 from typing import List, Dict
 from tenacity import retry, stop_after_attempt, wait_exponential
-from config import GUARDIAN_API_KEY, MARKET_SYMBOLS
+from config.config import GUARDIAN_API_KEY, MARKET_SYMBOLS
 
 
 class GuardianNewsCollector:

@@ -1,4 +1,4 @@
-from data_processor import DataProcessor
+from src.utils.data_processor import DataProcessor
 import torch
 import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader

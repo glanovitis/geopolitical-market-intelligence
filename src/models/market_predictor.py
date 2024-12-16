@@ -5,7 +5,7 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from model_trainer import LSTM
-from data_processor import DataProcessor
+from src.utils.data_processor import DataProcessor
 from tqdm import tqdm
 
 
