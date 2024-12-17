@@ -8,6 +8,7 @@ import glob
 import traceback
 from src.utils.data_processor import DataProcessor
 from src.utils.model_trainer import ModelTrainer
+from src.data.data_collector import MarketDataCollector
 
 # Configure logging and warnings
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
@@ -30,6 +31,36 @@ def check_cuda():
         logger.info("CUDA not available, using CPU")
     return device
 
+def collect_new_data():
+    """Collect new market and news data"""
+    try:
+        financial_symbols = ['AAPL', 'GOOGL', 'MSFT', 'AMZN']
+        years_of_history = 10
+
+        st.info("Initializing data collection...")
+        collector = MarketDataCollector(
+            financial_symbols=financial_symbols,
+            years_of_history=years_of_history
+        )
+
+        with st.spinner("Collecting market and news data..."):
+            dataset = collector.prepare_combined_dataset()
+            collector.save_to_csv(dataset)
+            st.success("Data collection completed successfully!")
+
+        # Return the path to the newest collection directory
+        data_dir = 'data'
+        collection_dirs = sorted([d for d in os.listdir(data_dir)
+                                if d.startswith('collection_') and
+                                os.path.isdir(os.path.join(data_dir, d))],
+                               reverse=True)
+        return os.path.join(data_dir, collection_dirs[0])
+
+    except Exception as e:
+        st.error(f"Data collection failed: {str(e)}")
+        logging.error(f"Data collection error: {str(e)}")
+        logging.error(f"Full traceback: {traceback.format_exc()}")
+        raise
 
 def main():
     st.title("Geopolitical Market Intelligence")
@@ -45,12 +76,12 @@ def main():
 
         # Model hyperparameters
         hyperparameters = {
-            'learning_rate': 0.0001,  # Reduced from 0.001
-            'batch_size': 16,  # Reduced from 32
-            'num_epochs': 100,
-            'hidden_size': 64,  # Reduced from 128
-            'num_layers': 2,
-            'dropout': 0.1  # Reduced from 0.2
+            'learning_rate': 0.00001,
+            'batch_size': 32,
+            'num_epochs': 150,
+            'hidden_size': 128,
+            'num_layers': 3,
+            'dropout': 0.2
         }
 
         # Get data directory
@@ -60,15 +91,20 @@ def main():
                                   os.path.isdir(os.path.join(data_dir, d))],
                                  reverse=True)
 
+        # If no data exists, collect new data
         if not collection_dirs:
             st.warning("No existing data found. Starting new data collection...")
-            return
+            base_dir = collect_new_data()
+            if not base_dir:
+                st.error("Data collection failed.")
+                return
+        else:
+            # Get the most recent data collection
+            latest_collection = collection_dirs[0]
+            base_dir = os.path.join(data_dir, latest_collection)
 
-        # Get the most recent data collection
-        latest_collection = collection_dirs[0]
-        base_dir = os.path.join(data_dir, latest_collection)
 
-        st.info(f"Using data from collection: {latest_collection}")
+        st.info(f"Using data from collection: {os.path.basename(base_dir)}")
 
         # Get market and news files
         market_files = glob.glob(os.path.join(base_dir, 'market_data', '*.csv'))
