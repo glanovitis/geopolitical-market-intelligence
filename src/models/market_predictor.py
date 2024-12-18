@@ -1,6 +1,7 @@
 import torch
 import json
 import os
+import logging
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -31,8 +32,8 @@ class MarketPredictor:
             input_size=self.config['input_size'],
             hidden_size=self.config['hidden_size'],
             num_layers=self.config['num_layers'],
-            dropout=self.config['dropout'],
-            num_stocks=self.num_stocks
+            output_size=self.num_stocks,  # Use num_stocks as output_size
+            dropout=self.config['dropout']
         ).to(self.device)
 
         checkpoint = torch.load(self.model_path, map_location=self.device)
@@ -48,39 +49,33 @@ class MarketPredictor:
             market_data: Market data input
             news_data: News data input
             batch_size: Number of samples to process at once (default: 32)
+
+        Returns:
+            dict: Dictionary containing normalized predictions and original scale predictions
         """
         try:
             processed_data = self.processor.combine_and_normalize_data()
             X, _, returns_columns = self.processor.prepare_training_sequences(processed_data)
-        
+
             predictions = []
             # Process in batches to avoid memory issues
             for i in range(0, len(X), batch_size):
-                batch = torch.FloatTensor(X[i:i+batch_size]).to(self.device)
+                batch = torch.FloatTensor(X[i:i + batch_size]).to(self.device)
                 with torch.no_grad():
                     batch_pred = self.model(batch)
                     predictions.append(batch_pred.cpu().numpy())
-                
-            return np.vstack(predictions)
-        except RuntimeError as e:
-            if "out of memory" in str(e):
-                # Clear cache and retry with smaller batch
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
-                return self.predict(market_data, news_data, batch_size // 2)
-            raise
 
             # Combine all batch predictions
             normalized_predictions = np.vstack(predictions)
 
             # Get the scaler from the processor
-            scaler = self.processor.market_scaler
+            scaler = self.processor.scaler  # Changed from market_scaler to scaler
 
             # Prepare for inverse transform
-            pred_reshaped = np.zeros((normalized_predictions.shape[0], len(scaler.scale_)))
+            pred_reshaped = np.zeros((normalized_predictions.shape[0], len(processed_data.columns)))
 
             # Put predictions in the correct columns
-            for i, col in enumerate(returns_columns):
+            for i, col in enumerate(self.returns_columns):
                 col_idx = list(processed_data.columns).index(col)
                 pred_reshaped[:, col_idx] = normalized_predictions[:, i]
 
@@ -89,7 +84,7 @@ class MarketPredictor:
 
             # Extract returns for each stock
             results = {}
-            for i, col in enumerate(returns_columns):
+            for i, col in enumerate(self.returns_columns):
                 col_idx = list(processed_data.columns).index(col)
                 results[col] = original_scale_full[:, col_idx]
 
@@ -97,8 +92,16 @@ class MarketPredictor:
                 'normalized': normalized_predictions,
                 'original_scale': results
             }
+
+        except RuntimeError as e:
+            if "out of memory" in str(e):
+                # Clear cache and retry with smaller batch
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                return self.predict(market_data, news_data, batch_size // 2)
+            raise
         except Exception as e:
-            print(f"Error during prediction: {e}")
+            logging.error(f"Error during prediction: {e}")
             raise
 
     def compare_predictions_with_actual(self, market_data, news_data):

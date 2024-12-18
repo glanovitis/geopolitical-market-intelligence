@@ -2,13 +2,16 @@ import os
 import warnings
 import logging
 import torch
+import pandas as pd
 import streamlit as st
 from dotenv import load_dotenv
 import glob
+import json
 import traceback
 from src.utils.data_processor import DataProcessor
 from src.utils.model_trainer import ModelTrainer
 from src.data.data_collector import MarketDataCollector
+from src.models.market_predictor import MarketPredictor
 
 # Configure logging and warnings
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
@@ -61,6 +64,62 @@ def collect_new_data():
         logging.error(f"Data collection error: {str(e)}")
         logging.error(f"Full traceback: {traceback.format_exc()}")
         raise
+
+
+def make_predictions(model_path, processor, data):
+    """Make predictions using the trained model"""
+    try:
+        predictor = MarketPredictor(model_path, processor)
+
+        with st.spinner("Making predictions..."):
+            predictions = predictor.predict(data['market_data'], data['news_data'])
+
+            if predictions is None:
+                st.error("Failed to generate predictions")
+                return None
+
+            # Display predictions
+            st.subheader("Market Predictions")
+
+            # Display normalized predictions
+            st.write("Normalized Predictions:")
+            norm_pred_df = pd.DataFrame(
+                predictions['normalized'],
+                columns=[col.replace('Returns_', '') for col in predictor.returns_columns]
+            )
+            st.dataframe(norm_pred_df.head())
+
+            # Display original scale predictions
+            st.write("Original Scale Predictions:")
+            for stock, values in predictions['original_scale'].items():
+                stock_name = stock.replace('Returns_', '')
+                st.write(f"{stock_name} predicted returns:")
+                chart_data = pd.DataFrame({
+                    'Predicted Returns': values[:30]
+                }, index=pd.date_range(end=pd.Timestamp.now(), periods=30, freq='D'))
+                st.line_chart(chart_data)
+
+            # Save predictions
+            save_dir = os.path.dirname(model_path)
+            norm_pred_path = os.path.join(save_dir, 'normalized_predictions.csv')
+            orig_pred_path = os.path.join(save_dir, 'original_scale_predictions.csv')
+
+            # Save normalized predictions
+            norm_pred_df.to_csv(norm_pred_path, index=False)
+
+            # Save original scale predictions
+            orig_pred_df = pd.DataFrame(predictions['original_scale'])
+            orig_pred_df.to_csv(orig_pred_path, index=False)
+
+            st.success(f"Predictions saved to {save_dir}")
+
+            return predictions
+
+    except Exception as e:
+        st.error(f"Error during prediction: {str(e)}")
+        logging.error(f"Prediction error: {str(e)}")
+        logging.error(f"Full traceback: {traceback.format_exc()}")
+        return None
 
 def main():
     st.title("Geopolitical Market Intelligence")
@@ -190,6 +249,45 @@ def main():
             model_path = os.path.join(base_dir, 'trained_model.pth')
             trainer.save_model(model_path)
             st.success(f"Model saved to {model_path}")
+
+            # Make predictions using the trained model
+            st.subheader("Making Predictions")
+            if st.button("Generate Market Predictions"):
+                try:
+                    # Create config file needed by MarketPredictor
+                    config = {
+                        'input_size': X.shape[2],
+                        'hidden_size': hyperparameters['hidden_size'],
+                        'num_layers': hyperparameters['num_layers'],
+                        'dropout': hyperparameters['dropout']
+                    }
+
+                    config_path = os.path.join(base_dir, 'config.json')
+                    with open(config_path, 'w') as f:
+                        json.dump(config, f)
+
+                    # Prepare data for predictions
+                    prediction_data = {
+                        'market_data': market_files,
+                        'news_data': news_files[-1]  # Use the most recent news data
+                    }
+
+                    # Make predictions
+                    predictions = make_predictions(model_path, processor, prediction_data)
+
+                    # Save predictions
+                    predictions_path = os.path.join(base_dir, 'predictions.csv')
+                    pred_df = pd.DataFrame(
+                        predictions['normalized'],
+                        columns=[col.replace('Returns_', '') for col in returns_columns]
+                    )
+                    pred_df.to_csv(predictions_path, index=False)
+                    st.success(f"Predictions saved to {predictions_path}")
+
+                except Exception as e:
+                    st.error(f"Error making predictions: {str(e)}")
+                    logging.error(f"Prediction error: {str(e)}")
+                    logging.error(f"Full traceback: {traceback.format_exc()}")
 
     except Exception as e:
         st.error(f"An error occurred: {str(e)}")
