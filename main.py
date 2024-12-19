@@ -93,10 +93,27 @@ def make_predictions(model_path, processor, data):
             st.write("Original Scale Predictions:")
             for stock, values in predictions['original_scale'].items():
                 stock_name = stock.replace('Returns_', '')
-                st.write(f"{stock_name} predicted returns:")
+
+                # Determine the appropriate number of periods and frequency
+                if '_5d' in stock:
+                    freq = '5D'
+                    n_periods = 12  # Show ~60 days worth of 5-day predictions
+                    title = f"{stock_name} 5-day predicted returns"
+                elif '_20d' in stock:
+                    freq = '20D'
+                    n_periods = 6  # Show ~120 days worth of 20-day predictions
+                    title = f"{stock_name} daily predicted returns"
+                else:
+                    freq = 'D'
+                    n_periods = 30  # Show 30 days of daily predictions
+                    title = f"{stock_name} daily predicted returns"
+
+                # Create date range starting from today going forward
                 chart_data = pd.DataFrame({
-                    'Predicted Returns': values[:30]
-                }, index=pd.date_range(end=pd.Timestamp.now(), periods=30, freq='D'))
+                    'Predicted Returns': values[:n_periods]
+                }, index=pd.date_range(start=pd.Timestamp.now(), periods=n_periods, freq=freq))
+
+                st.write(title)
                 st.line_chart(chart_data)
 
             # Save predictions
@@ -135,10 +152,10 @@ def main():
 
         # Model hyperparameters
         hyperparameters = {
-            'learning_rate': 0.00001,
+            'learning_rate': 0.00005,
             'batch_size': 32,
             'num_epochs': 150,
-            'hidden_size': 128,
+            'hidden_size': 256,
             'num_layers': 3,
             'dropout': 0.2
         }
