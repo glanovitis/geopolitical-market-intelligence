@@ -5,3 +5,21 @@ __pycache__/
 *.pyc
 /.vs
 /env
+
+# PDF Processing Pipeline
+server/uploads/*/
+*.pdf
+*.png
+*.jpg
+*.jpeg
+process_*/
+batch_*/
+
+# Test artifacts
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Temporary files
+/tmp/
+*.tmp
