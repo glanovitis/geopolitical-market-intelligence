@@ -1,0 +1,1 @@
+"""CVAT Integration package for automated annotation import."""
