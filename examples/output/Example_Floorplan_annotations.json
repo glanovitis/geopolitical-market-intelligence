@@ -1,0 +1,77 @@
+{
+  "version": "1.1",
+  "meta": {
+    "task": {
+      "name": "Example_Floorplan",
+      "size": 1,
+      "mode": "annotation",
+      "labels": [
+        {
+          "name": "indoor",
+          "color": "#00ff00",
+          "attributes": []
+        },
+        {
+          "name": "outdoor",
+          "color": "#0000ff",
+          "attributes": []
+        }
+      ]
+    }
+  },
+  "annotations": [
+    {
+      "id": 0,
+      "type": "polygon",
+      "occluded": false,
+      "points": [
+        0.08333333333333333,
+        0.125,
+        0.3333333333333333,
+        0.125,
+        0.3333333333333333,
+        0.375,
+        0.08333333333333333,
+        0.375
+      ],
+      "label": "indoor",
+      "attributes": [
+        {
+          "name": "confidence",
+          "value": "1.0"
+        },
+        {
+          "name": "area",
+          "value": "60000"
+        }
+      ]
+    },
+    {
+      "id": 1,
+      "type": "polygon",
+      "occluded": false,
+      "points": [
+        0.041666666666666664,
+        0.0625,
+        0.4166666666666667,
+        0.0625,
+        0.4166666666666667,
+        0.5,
+        0.041666666666666664,
+        0.5
+      ],
+      "label": "outdoor",
+      "attributes": [
+        {
+          "name": "confidence",
+          "value": "0.95"
+        },
+        {
+          "name": "area",
+          "value": "157500"
+        }
+      ]
+    }
+  ],
+  "tracks": []
+}
